@@ -1,4 +1,0 @@
-# Copy to terraform.tfvars (gitignored) before apply
-prefix   = "devsecops"
-location = "westeurope"
-# kubernetes_version = "1.29"

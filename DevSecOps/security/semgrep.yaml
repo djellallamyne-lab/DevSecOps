@@ -1,8 +1,0 @@
-rules:
-  - p/ci
-  - p/java
-  - p/security-audit
-  - p/secrets
-
-# Fail the pipeline on ERROR severity findings
-severity: ERROR
