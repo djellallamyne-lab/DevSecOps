@@ -119,7 +119,7 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 
 Voir [docs/backup.md](docs/backup.md).
 
-## Sécurité (défense en profondeur)
+## Sécurité 
 
 1. **Secrets** — Ansible Vault uniquement ; rien en clair dans Git
 2. **CI / supply chain** — Gitleaks → Semgrep → Trivy fs → **Trivy image avant push** → Checkov → SBOM
