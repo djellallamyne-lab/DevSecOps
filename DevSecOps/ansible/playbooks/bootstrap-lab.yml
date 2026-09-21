@@ -1,0 +1,138 @@
+---
+# Bootstrap DevSecOps lab on the local machine (Windows-friendly via WSL/Linux preferred for Ansible).
+# Usage:
+#   copy group_vars/all/vault.yml.example group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml --vault-password-file ~/.ansible-vault-devsecops
+#   ansible-playbook -i inventory/local.yml playbooks/bootstrap-lab.yml \
+#     --vault-password-file ~/.ansible-vault-devsecops
+
+- name: Bootstrap DevSecOps lab
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all/vars.yml
+  tasks:
+    - name: Ensure vault file exists (copy from example if missing)
+      ansible.builtin.copy:
+        src: ../group_vars/all/vault.yml.example
+        dest: ../group_vars/all/vault.yml
+        force: false
+        mode: "0600"
+      tags: [vault]
+
+    - name: Load vault secrets
+      ansible.builtin.include_vars:
+        file: ../group_vars/all/vault.yml
+      tags: [vault]
+
+    - name: Check Docker is available
+      ansible.builtin.command: docker version --format '{{.Server.Version}}'
+      register: docker_version
+      changed_when: false
+      failed_when: docker_version.rc != 0
+
+    - name: Ensure lab directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ playbook_dir }}/../../backups/snapshots"
+        - "{{ playbook_dir }}/../../backups/git"
+        - "{{ playbook_dir }}/../../backups/lab"
+        - "{{ playbook_dir }}/../../docker/jenkins_home"
+
+    - name: Start Jenkins and local registry (compose)
+      ansible.builtin.command:
+        cmd: docker compose -f docker/lab-compose.yml up -d
+        chdir: "{{ playbook_dir }}/../.."
+      register: compose_up
+      changed_when: "'Started' in compose_up.stdout or 'Creating' in compose_up.stdout or compose_up.rc == 0"
+
+    - name: Check kind binary
+      ansible.builtin.command: kind version
+      register: kind_check
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if kind is missing
+      ansible.builtin.debug:
+        msg: >-
+          kind not found. Install from https://kind.sigs.k8s.io/ then re-run with --tags k8s.
+          Skipping cluster creation.
+      when: kind_check.rc != 0
+
+    - name: Create kind cluster if missing
+      ansible.builtin.shell: |
+        set -e
+        if ! kind get clusters | grep -qx '{{ kind_cluster_name }}'; then
+          kind create cluster --name '{{ kind_cluster_name }}' --config '{{ playbook_dir }}/../files/kind-config.yaml'
+        fi
+      args:
+        executable: /bin/bash
+      when: kind_check.rc == 0
+      tags: [k8s]
+
+    - name: Create application namespace with PSS restricted
+      ansible.builtin.command: >
+        kubectl create namespace {{ app_namespace }}
+        --dry-run=client -o yaml
+      register: ns_yaml
+      changed_when: false
+      when: kind_check.rc == 0
+      tags: [k8s]
+
+    - name: Apply namespace labels (PSS restricted)
+      ansible.builtin.shell: |
+        kubectl apply -f - <<'EOF'
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: {{ app_namespace }}
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
+            name: {{ app_namespace }}
+        EOF
+      args:
+        executable: /bin/bash
+      when: kind_check.rc == 0
+      tags: [k8s]
+
+    - name: Install Kyverno via Helm
+      ansible.builtin.shell: |
+        set -e
+        helm repo add kyverno https://kyverno.github.io/kyverno/ || true
+        helm repo update
+        helm upgrade --install kyverno kyverno/kyverno \
+          --namespace kyverno --create-namespace \
+          --version {{ kyverno_chart_version }} \
+          --wait --timeout 5m
+      args:
+        executable: /bin/bash
+      when: kind_check.rc == 0
+      tags: [k8s, kyverno]
+
+    - name: Apply Kyverno policies
+      ansible.builtin.command: kubectl apply -f security/policies/kyverno/
+      args:
+        chdir: "{{ playbook_dir }}/../.."
+      when: kind_check.rc == 0
+      tags: [k8s, kyverno]
+
+    - name: Apply namespace LimitRange and ResourceQuota
+      ansible.builtin.command: kubectl apply -f k8s/
+      args:
+        chdir: "{{ playbook_dir }}/../.."
+      when: kind_check.rc == 0
+      tags: [k8s]
+
+    - name: Print lab endpoints
+      ansible.builtin.debug:
+        msg:
+          - "Jenkins:  http://localhost:{{ jenkins_http_port }} (user={{ vault_jenkins_admin_user }})"
+          - "Registry: {{ registry_url }}"
+          - "Namespace: {{ app_namespace }}"
+          - "Next: configure Jenkins job from jenkins/casc and run the pipeline"
+          - "Encrypt vault: ansible-vault encrypt ansible/group_vars/all/vault.yml"

@@ -1,0 +1,10 @@
+title = "DevSecOps gitleaks"
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlisted paths"
+paths = [
+  '''backups/''',
+  '''.*/vault\.yml\.example$''',
+]
