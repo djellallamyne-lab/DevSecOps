@@ -152,6 +152,3 @@ docs/                   # Architecture, sécurité, backup
 
 
 
-## Licence
-
-MIT.
